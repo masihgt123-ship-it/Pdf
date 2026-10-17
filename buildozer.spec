@@ -10,7 +10,7 @@ source.exclude_dirs = .git,.github,.buildozer,bin,venv,.venv
 
 version = 0.1.0
 
-requirements = python3==3.11.5,hostpython3==3.11.5,kivy,pyjnius,pypdf==5.1.0,python-docx==1.1.2,lxml,typing_extensions
+requirements = python3==3.11.5,hostpython3==3.11.5,kivy,pyjnius,pypdf==5.1.0,python-docx==1.1.2,lxml==4.9.3,typing_extensions
 
 orientation = portrait
 fullscreen = 0
