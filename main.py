@@ -62,13 +62,13 @@ def pdf_bytes(writer):
 
 def clean_text(text):
     return ''.join(
-        character
-        for character in text
+        char
+        for char in text
         if (
-            character in '\n\r\t'
-            or 0x20 <= ord(character) <= 0xD7FF
-            or 0xE000 <= ord(character) <= 0xFFFD
-            or 0x10000 <= ord(character) <= 0x10FFFF
+            char in '\n\r\t'
+            or 0x20 <= ord(char) <= 0xD7FF
+            or 0xE000 <= ord(char) <= 0xFFFD
+            or 0x10000 <= ord(char) <= 0x10FFFF
         )
     )
 
@@ -80,18 +80,18 @@ def word_bytes(texts):
         if index:
             document.add_page_break()
 
-        cleaned = (
+        content = (
             clean_text(text).strip()
             or '[No text found on this page]'
         )
 
-        for line in cleaned.splitlines():
+        for line in content.splitlines():
             paragraph = document.add_paragraph()
 
             rtl = any(
-                '\u0590' <= character <= '\u08ff'
-                or '\ufb1d' <= character <= '\ufefc'
-                for character in line
+                '\u0590' <= char <= '\u08ff'
+                or '\ufb1d' <= char <= '\ufefc'
+                for char in line
             )
 
             if rtl:
@@ -111,7 +111,6 @@ def word_bytes(texts):
 
     output = BytesIO()
     document.save(output)
-
     return output.getvalue()
 
 
@@ -142,9 +141,28 @@ def page_numbers(value, count):
 class SignaturePad(Widget):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-
         self.strokes = []
         self.active = None
+
+    def on_touch_down(self, touch):
+        if (
+            not self.collide_point(*touch.pos)
+            or self.active is not None
+        ):
+            return super().on_touch_down(touch)
+
+        touch.grab(self)
+        self.active = touch.uid
+        self.strokes.append([self.normal(touch)])
+
+        with self.canvas:
+            Color(0.2, 0.7, 1, 1)
+            self.line = Line(
+                points=list(touch.pos),
+                width=2,
+            )
+
+        return True
 
     def normal(self, touch):
         return (
@@ -163,27 +181,6 @@ class SignaturePad(Widget):
                 ),
             ),
         )
-
-    def on_touch_down(self, touch):
-        if (
-            not self.collide_point(*touch.pos)
-            or self.active is not None
-        ):
-            return super().on_touch_down(touch)
-
-        touch.grab(self)
-        self.active = touch.uid
-
-        self.strokes.append([self.normal(touch)])
-
-        with self.canvas:
-            Color(0.2, 0.7, 1, 1)
-            self.line = Line(
-                points=list(touch.pos),
-                width=2,
-            )
-
-        return True
 
     def on_touch_move(self, touch):
         if touch.grab_current is self:
@@ -209,16 +206,14 @@ class SignaturePad(Widget):
 class PDFToolsApp(App):
     def build(self):
         self.title = 'PDF Tools'
-
         self.busy = False
         self.picker_pending = False
         self.bound = False
-
         self.data = None
         self.page = 0
         self.result = None
-        self.pending_save = None
         self.buttons = []
+        self.pending_save = None
 
         root = BoxLayout(
             orientation='vertical',
@@ -286,9 +281,7 @@ class PDFToolsApp(App):
 
         self.add_row(
             root,
-            [
-                ('Save result', self.save),
-            ],
+            [('Save result', self.save)],
         )
 
         self.status = Label(
@@ -360,7 +353,7 @@ class PDFToolsApp(App):
 
         return True
 
-    def job(self, function):
+    def job(self, fn):
         if self.busy:
             return
 
@@ -370,18 +363,15 @@ class PDFToolsApp(App):
 
         def work():
             try:
-                update = function()
+                update = fn()
 
                 Clock.schedule_once(
                     lambda dt: done(update, None)
                 )
 
-            except Exception as error:
+            except Exception as exc:
                 Clock.schedule_once(
-                    lambda dt, message=str(error): done(
-                        None,
-                        message,
-                    )
+                    lambda dt, msg=str(exc): done(None, msg)
                 )
 
         def done(update, error):
@@ -392,8 +382,8 @@ class PDFToolsApp(App):
                 elif update:
                     update()
 
-            except Exception as error:
-                self.status.text = 'Error: ' + str(error)
+            except Exception as exc:
+                self.status.text = 'Error: ' + str(exc)
 
             finally:
                 self.busy = False
@@ -406,15 +396,26 @@ class PDFToolsApp(App):
 
     def on_start(self):
         if platform == 'android':
+            from jnius import autoclass
+
+            # Load the app class on the main thread,
+            # before background workers need to use it.
+            self.pdf_bridge = autoclass(
+                'org.pdftools.tools.PdfBridge'
+            )
+
             from android import activity
 
             activity.bind(
                 on_activity_result=self.activity_result
             )
+
             self.bound = True
 
         else:
-            self.status.text = 'This build requires Android.'
+            self.status.text = (
+                'This build requires Android.'
+            )
 
             for button in self.buttons:
                 button.disabled = True
@@ -451,13 +452,13 @@ class PDFToolsApp(App):
                     Intent.CATEGORY_OPENABLE
                 )
 
-                mime_type = (
+                mime = (
                     self.pending_save[1]
                     if request == 103
                     else 'application/pdf'
                 )
 
-                intent.setType(mime_type)
+                intent.setType(mime)
 
                 if request == 103:
                     intent.putExtra(
@@ -470,10 +471,11 @@ class PDFToolsApp(App):
                     request,
                 )
 
-            except Exception as error:
+            except Exception as exc:
                 Clock.schedule_once(
-                    lambda dt, message=str(error):
-                    self.picker_failed(message)
+                    lambda dt, msg=str(exc): (
+                        self.picker_failed(msg)
+                    )
                 )
 
         launch()
@@ -481,7 +483,6 @@ class PDFToolsApp(App):
     def picker_failed(self, message):
         self.picker_pending = False
         self.lock()
-
         self.status.text = (
             'File picker error: ' + message
         )
@@ -518,16 +519,16 @@ class PDFToolsApp(App):
             )
 
         try:
-            file_descriptor = descriptor.detachFd()
+            fd = descriptor.detachFd()
 
         finally:
             descriptor.close()
 
         try:
-            return os.fdopen(file_descriptor, mode)
+            return os.fdopen(fd, mode)
 
         except Exception:
-            os.close(file_descriptor)
+            os.close(fd)
             raise
 
     def selected(self, request, uri):
@@ -564,12 +565,11 @@ class PDFToolsApp(App):
             if request == 102:
                 current = reader_for(self.data)
 
-                total_pages = (
+                if (
                     len(current.pages)
                     + len(incoming.pages)
-                )
-
-                if total_pages > MAX_PAGES:
+                    > MAX_PAGES
+                ):
                     raise ValueError(
                         'Merged PDF cannot exceed 300 pages.'
                     )
@@ -591,17 +591,13 @@ class PDFToolsApp(App):
             return self.prepare_document(
                 data,
                 message,
-                export=request == 102,
+                request == 102,
             )
 
         self.job(work)
 
     def bridge(self):
-        from jnius import autoclass
-
-        return autoclass(
-            'org.pdftools.tools.PdfBridge'
-        )
+        return self.pdf_bridge
 
     def prepare_document(
         self,
@@ -612,14 +608,13 @@ class PDFToolsApp(App):
     ):
         count = len(reader_for(data).pages)
         page = min(page, count - 1)
-
         pending = self.local_pdf + '.pending'
 
         try:
             with open(pending, 'wb') as stream:
                 stream.write(data)
 
-            image_data = self.render(page, pending)
+            texture = self.render(page, pending)
             os.replace(pending, self.local_pdf)
 
         finally:
@@ -637,7 +632,7 @@ class PDFToolsApp(App):
                 else None
             )
 
-            self.set_preview(image_data)
+            self.set_preview(texture)
 
             self.counter.text = (
                 'Page %d / %d' % (page + 1, count)
@@ -681,11 +676,11 @@ class PDFToolsApp(App):
         )
 
         def work():
-            image_data = self.render(page)
+            image = self.render(page)
 
             def update():
                 self.page = page
-                self.set_preview(image_data)
+                self.set_preview(image)
 
                 self.counter.text = (
                     'Page %d / %d'
@@ -704,25 +699,29 @@ class PDFToolsApp(App):
             'tessdata',
         )
 
-        os.makedirs(destination, exist_ok=True)
+        os.makedirs(
+            destination,
+            exist_ok=True,
+        )
 
         assets = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
+            os.path.dirname(
+                os.path.abspath(__file__)
+            ),
             'tessdata',
         )
 
         for language in ('fas', 'eng'):
+            filename = language + '.traineddata'
+
             target = os.path.join(
                 destination,
-                language + '.traineddata',
+                filename,
             )
 
             if not os.path.exists(target):
                 shutil.copyfile(
-                    os.path.join(
-                        assets,
-                        language + '.traineddata',
-                    ),
+                    os.path.join(assets, filename),
                     target,
                 )
 
@@ -765,7 +764,7 @@ class PDFToolsApp(App):
 
             content = word_bytes(texts)
 
-            empty_pages = sum(
+            empty = sum(
                 not text.strip()
                 for text in texts
             )
@@ -778,8 +777,8 @@ class PDFToolsApp(App):
                 )
 
                 self.status.text = (
-                    'Word ready. Save result. Empty pages: %d'
-                    % empty_pages
+                    'Word ready. Save result. '
+                    'Empty pages: %d' % empty
                 )
 
             return update
@@ -797,14 +796,12 @@ class PDFToolsApp(App):
             hint_text=hint,
             multiline=False,
         )
-
         box.add_widget(entry)
 
         row = BoxLayout(
             size_hint_y=None,
             height=50,
         )
-
         box.add_widget(row)
 
         popup = Popup(
@@ -813,14 +810,18 @@ class PDFToolsApp(App):
             size_hint=(0.95, 0.45),
         )
 
-        def apply():
-            popup.dismiss()
-            callback(entry.text)
-
-        for text, action in [
+        actions = [
             ('Cancel', popup.dismiss),
-            ('Apply', apply),
-        ]:
+            (
+                'Apply',
+                lambda: (
+                    popup.dismiss(),
+                    callback(entry.text),
+                ),
+            ),
+        ]
+
+        for text, action in actions:
             button = Button(text=text)
 
             button.bind(
@@ -866,16 +867,14 @@ class PDFToolsApp(App):
             )
 
     def add_note(self, text):
-        invalid = (
+        if (
             not text.strip()
             or len(text) > 80
             or any(
-                not 32 <= ord(character) <= 126
-                for character in text
+                not 32 <= ord(char) <= 126
+                for char in text
             )
-        )
-
-        if invalid:
+        ):
             self.status.text = (
                 'Use 1-80 printable English characters '
                 'for PDF notes.'
@@ -912,7 +911,6 @@ class PDFToolsApp(App):
             size_hint_y=None,
             height=50,
         )
-
         box.add_widget(row)
 
         popup = Popup(
@@ -937,11 +935,13 @@ class PDFToolsApp(App):
             popup.dismiss()
             self.stamp(strokes=strokes)
 
-        for text, action in [
+        actions = [
             ('Cancel', popup.dismiss),
             ('Clear', pad.clear),
             ('Apply', apply),
-        ]:
+        ]
+
+        for text, action in actions:
             button = Button(text=text)
 
             button.bind(
@@ -986,34 +986,21 @@ class PDFToolsApp(App):
                     .replace(')', '\\)')
                 )
 
-                font = DictionaryObject(
-                    {
-                        NameObject('/Type'):
-                            NameObject('/Font'),
-
-                        NameObject('/Subtype'):
-                            NameObject('/Type1'),
-
-                        NameObject('/BaseFont'):
-                            NameObject('/Helvetica'),
-                    }
-                )
+                font = DictionaryObject({
+                    NameObject('/Type'): NameObject('/Font'),
+                    NameObject('/Subtype'): NameObject('/Type1'),
+                    NameObject('/BaseFont'): NameObject('/Helvetica'),
+                })
 
                 overlay[NameObject('/Resources')] = (
-                    DictionaryObject(
-                        {
-                            NameObject('/Font'):
-                                DictionaryObject(
-                                    {
-                                        NameObject('/F1'):
-                                            font,
-                                    }
-                                ),
-                        }
-                    )
+                    DictionaryObject({
+                        NameObject('/Font'): DictionaryObject({
+                            NameObject('/F1'): font,
+                        }),
+                    })
                 )
 
-                font_size = max(
+                size = max(
                     1,
                     min(
                         12,
@@ -1023,10 +1010,9 @@ class PDFToolsApp(App):
                 )
 
                 commands.append(
-                    'BT /F1 %.2f Tf '
-                    '15 %.2f Td (%s) Tj ET'
+                    'BT /F1 %.2f Tf 15 %.2f Td (%s) Tj ET'
                     % (
-                        font_size,
+                        size,
                         max(5, height - 25),
                         escaped,
                     )
@@ -1088,8 +1074,8 @@ class PDFToolsApp(App):
 
             writer = PdfWriter()
 
-            for document_page in reader.pages:
-                writer.add_page(document_page)
+            for pdf_page in reader.pages:
+                writer.add_page(pdf_page)
 
             return self.prepare_document(
                 pdf_bytes(writer),
