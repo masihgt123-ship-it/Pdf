@@ -112,10 +112,11 @@ public final class PdfBridge {
         Bitmap bitmap = null;
 
         try {
+            // Tesseract engine mode 1: LSTM only.
             boolean initialized = api.init(
                 dataDirectory,
                 "fas+eng",
-                TessBaseAPI.OEM_LSTM_ONLY
+                1
             );
 
             if (!initialized) {
