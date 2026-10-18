@@ -101,7 +101,6 @@ def word_bytes(texts):
 
             if rtl:
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-
                 tag = OxmlElement("w:bidi")
                 tag.set(qn("w:val"), "1")
                 paragraph._p.get_or_add_pPr().append(tag)
@@ -149,6 +148,18 @@ class SignaturePad(Widget):
         self.strokes = []
         self.active = None
 
+    def normal(self, touch):
+        return (
+            max(
+                0,
+                min(1, (touch.x - self.x) / max(1, self.width)),
+            ),
+            max(
+                0,
+                min(1, (touch.y - self.y) / max(1, self.height)),
+            ),
+        )
+
     def on_touch_down(self, touch):
         if (
             not self.collide_point(*touch.pos)
@@ -169,28 +180,11 @@ class SignaturePad(Widget):
 
         return True
 
-    def normal(self, touch):
-        return (
-            max(
-                0,
-                min(
-                    1,
-                    (touch.x - self.x) / max(1, self.width),
-                ),
-            ),
-            max(
-                0,
-                min(
-                    1,
-                    (touch.y - self.y) / max(1, self.height),
-                ),
-            ),
-        )
-
     def on_touch_move(self, touch):
         if touch.grab_current is self:
-            self.strokes[-1].append(self.normal(touch))
-            self.line.points += list(touch.pos)
+            if self.active == touch.uid and self.strokes:
+                self.strokes[-1].append(self.normal(touch))
+                self.line.points += list(touch.pos)
             return True
 
         return super().on_touch_move(touch)
@@ -206,6 +200,7 @@ class SignaturePad(Widget):
     def clear(self):
         self.canvas.clear()
         self.strokes = []
+        self.active = None
 
 
 class ToolButton(Button):
@@ -219,7 +214,6 @@ class ToolButton(Button):
         self.background_normal = ""
         self.background_down = ""
         self.background_color = (0, 0, 0, 0)
-
         self.color = (0.12, 0.18, 0.27, 1)
         self.font_size = "14sp"
         self.halign = "center"
@@ -243,7 +237,6 @@ class ToolButton(Button):
     def refresh(self, *args):
         self.panel.pos = self.pos
         self.panel.size = self.size
-
         self.text_size = (
             max(1, self.width - dp(12)),
             self.height,
@@ -251,8 +244,7 @@ class ToolButton(Button):
 
         if self.state == "down":
             self.fill.rgba = tuple(
-                value * 0.90
-                for value in self.tint[:3]
+                value * 0.90 for value in self.tint[:3]
             ) + (1,)
         else:
             self.fill.rgba = self.tint
@@ -266,9 +258,11 @@ class PDFToolsApp(App):
         self.bound = False
         self.data = None
         self.page = 0
+        self.count = 0
         self.result = None
         self.buttons = []
         self.pending_save = None
+        self.pdf_bridge = None
 
         Window.clearcolor = (0.98, 0.985, 1, 1)
 
@@ -309,10 +303,7 @@ class PDFToolsApp(App):
         )
 
         home = Screen(name="home")
-
-        scroll = ScrollView(
-            do_scroll_x=False
-        )
+        scroll = ScrollView(do_scroll_x=False)
 
         dashboard = BoxLayout(
             orientation="vertical",
@@ -363,9 +354,7 @@ class PDFToolsApp(App):
             (
                 "MERGE\n\nCombine PDFs",
                 lambda: (
-                    self.pick(102)
-                    if self.require()
-                    else None
+                    self.pick(102) if self.require() else None
                 ),
                 (0.86, 0.96, 0.92, 1),
             ),
@@ -463,7 +452,6 @@ class PDFToolsApp(App):
 
         viewer.add_widget(view)
         self.screens.add_widget(viewer)
-
         root.add_widget(self.screens)
 
         self.status = Label(
@@ -477,9 +465,7 @@ class PDFToolsApp(App):
 
         self.status.bind(
             size=lambda widget, size: setattr(
-                widget,
-                "text_size",
-                (size[0], None),
+                widget, "text_size", (size[0], None)
             )
         )
 
@@ -495,6 +481,8 @@ class PDFToolsApp(App):
                 ),
             ],
         )
+
+        os.makedirs(self.user_data_dir, exist_ok=True)
 
         self.local_pdf = os.path.join(
             self.user_data_dir,
@@ -520,11 +508,9 @@ class PDFToolsApp(App):
 
         for title, action in actions:
             button = ToolButton(text=title)
-
             button.bind(
                 on_release=lambda _, fn=action: fn()
             )
-
             self.buttons.append(button)
             row.add_widget(button)
 
@@ -538,55 +524,45 @@ class PDFToolsApp(App):
 
     def report(self, text):
         Clock.schedule_once(
-            lambda dt: setattr(
-                self.status,
-                "text",
-                text,
-            )
+            lambda dt: setattr(self.status, "text", text)
         )
 
     def require(self):
         if self.data is None:
             self.status.text = "Open a PDF first."
             return False
-
         return True
 
     def job(self, fn):
-        if self.busy:
+        if self.busy or self.picker_pending:
             return
 
         self.busy = True
         self.lock()
         self.status.text = "Working..."
 
-        def work():
-            try:
-                update = fn()
-
-                Clock.schedule_once(
-                    lambda dt: done(update, None)
-                )
-
-            except Exception as exc:
-                Clock.schedule_once(
-                    lambda dt, msg=str(exc): done(None, msg)
-                )
-
         def done(update, error):
             try:
                 if error:
                     self.status.text = "Error: " + error
-
                 elif update:
                     update()
-
             except Exception as exc:
                 self.status.text = "Error: " + str(exc)
-
             finally:
                 self.busy = False
                 self.lock()
+
+        def work():
+            try:
+                update = fn()
+                Clock.schedule_once(
+                    lambda dt: done(update, None)
+                )
+            except Exception as exc:
+                Clock.schedule_once(
+                    lambda dt, msg=str(exc): done(None, msg)
+                )
 
         threading.Thread(
             target=work,
@@ -598,21 +574,27 @@ class PDFToolsApp(App):
             from jnius import autoclass
             from android import activity
 
-            # Load the Java class before background jobs.
-            self.pdf_bridge = autoclass(
-                "org.pdftools.tools.PdfBridge"
-            )
+            try:
+                self.pdf_bridge = autoclass(
+                    "org.pdftools.tools.PdfBridge"
+                )
 
-            activity.bind(
-                on_activity_result=self.activity_result
-            )
+                activity.bind(
+                    on_activity_result=self.activity_result
+                )
 
-            self.bound = True
+                self.bound = True
+
+            except Exception as exc:
+                self.status.text = (
+                    "Android initialization error: " + str(exc)
+                )
+
+                for button in self.buttons:
+                    button.disabled = True
 
         else:
-            self.status.text = (
-                "This build requires Android."
-            )
+            self.status.text = "This build requires Android."
 
             for button in self.buttons:
                 button.disabled = True
@@ -630,9 +612,7 @@ class PDFToolsApp(App):
         @run_on_ui_thread
         def launch():
             try:
-                Intent = autoclass(
-                    "android.content.Intent"
-                )
+                Intent = autoclass("android.content.Intent")
 
                 activity = autoclass(
                     "org.kivy.android.PythonActivity"
@@ -645,10 +625,7 @@ class PDFToolsApp(App):
                 )
 
                 intent = Intent(action)
-
-                intent.addCategory(
-                    Intent.CATEGORY_OPENABLE
-                )
+                intent.addCategory(Intent.CATEGORY_OPENABLE)
 
                 mime = (
                     self.pending_save[1]
@@ -665,15 +642,12 @@ class PDFToolsApp(App):
                     )
 
                 activity.startActivityForResult(
-                    intent,
-                    request,
+                    intent, request
                 )
 
             except Exception as exc:
                 Clock.schedule_once(
-                    lambda dt, msg=str(exc): (
-                        self.picker_failed(msg)
-                    )
+                    lambda dt, msg=str(exc): self.picker_failed(msg)
                 )
 
         launch()
@@ -681,10 +655,7 @@ class PDFToolsApp(App):
     def picker_failed(self, message):
         self.picker_pending = False
         self.lock()
-
-        self.status.text = (
-            "File picker error: " + message
-        )
+        self.status.text = "File picker error: " + message
 
     def activity_result(self, request, code, intent):
         if request not in (101, 102, 103):
@@ -719,13 +690,11 @@ class PDFToolsApp(App):
 
         try:
             fd = descriptor.detachFd()
-
         finally:
             descriptor.close()
 
         try:
             return os.fdopen(fd, mode)
-
         except Exception:
             os.close(fd)
             raise
@@ -790,12 +759,16 @@ class PDFToolsApp(App):
             return self.prepare_document(
                 data,
                 message,
-                request == 102,
+                export=request == 102,
             )
 
         self.job(work)
 
     def bridge(self):
+        if self.pdf_bridge is None:
+            raise RuntimeError(
+                "PDF Android bridge is not available."
+            )
         return self.pdf_bridge
 
     def prepare_document(
@@ -806,8 +779,7 @@ class PDFToolsApp(App):
         page=0,
     ):
         count = len(reader_for(data).pages)
-        page = min(page, count - 1)
-
+        page = max(0, min(page, count - 1))
         pending = self.local_pdf + ".pending"
 
         try:
@@ -833,12 +805,9 @@ class PDFToolsApp(App):
             )
 
             self.set_preview(image_data)
-
             self.counter.text = (
-                "Page %d / %d"
-                % (page + 1, count)
+                "Page %d / %d" % (page + 1, count)
             )
-
             self.status.text = message
 
         return update
@@ -860,7 +829,6 @@ class PDFToolsApp(App):
 
     def set_preview(self, data):
         self.screens.current = "viewer"
-
         self.preview.texture = CoreImage(
             BytesIO(data),
             ext="png",
@@ -872,10 +840,7 @@ class PDFToolsApp(App):
 
         page = max(
             0,
-            min(
-                self.count - 1,
-                self.page + delta,
-            ),
+            min(self.count - 1, self.page + delta),
         )
 
         def work():
@@ -884,12 +849,10 @@ class PDFToolsApp(App):
             def update():
                 self.page = page
                 self.set_preview(image_data)
-
                 self.counter.text = (
                     "Page %d / %d"
                     % (page + 1, self.count)
                 )
-
                 self.status.text = "Ready."
 
             return update
@@ -902,25 +865,16 @@ class PDFToolsApp(App):
             "tessdata",
         )
 
-        os.makedirs(
-            destination,
-            exist_ok=True,
-        )
+        os.makedirs(destination, exist_ok=True)
 
         assets = os.path.join(
-            os.path.dirname(
-                os.path.abspath(__file__)
-            ),
+            os.path.dirname(os.path.abspath(__file__)),
             "tessdata",
         )
 
         for language in ("fas", "eng"):
             filename = language + ".traineddata"
-
-            target = os.path.join(
-                destination,
-                filename,
-            )
+            target = os.path.join(destination, filename)
 
             if not os.path.exists(target):
                 shutil.copyfile(
@@ -953,11 +907,10 @@ class PDFToolsApp(App):
                         index,
                         self.ocr_dir,
                     )
-
                 else:
                     text = page.extract_text() or ""
 
-                texts.append(text)
+                texts.append(text or "")
 
             if not any(text.strip() for text in texts):
                 raise ValueError(
@@ -966,11 +919,7 @@ class PDFToolsApp(App):
                 )
 
             content = word_bytes(texts)
-
-            empty = sum(
-                not text.strip()
-                for text in texts
-            )
+            empty = sum(not text.strip() for text in texts)
 
             def update():
                 self.result = (
@@ -1016,24 +965,20 @@ class PDFToolsApp(App):
             size_hint=(0.95, 0.45),
         )
 
+        def apply():
+            popup.dismiss()
+            callback(entry.text)
+
         actions = [
             ("Cancel", popup.dismiss),
-            (
-                "Apply",
-                lambda: (
-                    popup.dismiss(),
-                    callback(entry.text),
-                ),
-            ),
+            ("Apply", apply),
         ]
 
         for text, action in actions:
             button = ToolButton(text=text)
-
             button.bind(
                 on_release=lambda _, fn=action: fn()
             )
-
             row.add_widget(button)
 
         popup.open()
@@ -1052,12 +997,9 @@ class PDFToolsApp(App):
             writer = PdfWriter()
 
             for index in page_numbers(
-                value,
-                len(reader.pages),
+                value, len(reader.pages)
             ):
-                writer.add_page(
-                    reader.pages[index]
-                )
+                writer.add_page(reader.pages[index])
 
             return self.prepare_document(
                 pdf_bytes(writer),
@@ -1155,16 +1097,17 @@ class PDFToolsApp(App):
 
         for text, action in actions:
             button = ToolButton(text=text)
-
             button.bind(
                 on_release=lambda _, fn=action: fn()
             )
-
             row.add_widget(button)
 
         popup.open()
 
     def stamp(self, note=None, strokes=None):
+        if not self.require():
+            return
+
         def work():
             reader = reader_for(self.data)
             page = reader.pages[self.page]
@@ -1177,7 +1120,6 @@ class PDFToolsApp(App):
             height = float(page.mediabox.height)
 
             overlay_writer = PdfWriter()
-
             overlay = overlay_writer.add_blank_page(
                 width=width,
                 height=height,
@@ -1192,29 +1134,22 @@ class PDFToolsApp(App):
 
             if note:
                 escaped = (
-                    note
-                    .replace("\\", "\\\\")
+                    note.replace("\\", "\\\\")
                     .replace("(", "\\(")
                     .replace(")", "\\)")
                 )
 
                 font = DictionaryObject({
-                    NameObject("/Type"):
-                        NameObject("/Font"),
-                    NameObject("/Subtype"):
-                        NameObject("/Type1"),
-                    NameObject("/BaseFont"):
-                        NameObject("/Helvetica"),
+                    NameObject("/Type"): NameObject("/Font"),
+                    NameObject("/Subtype"): NameObject("/Type1"),
+                    NameObject("/BaseFont"): NameObject("/Helvetica"),
                 })
 
-                overlay[NameObject("/Resources")] = (
-                    DictionaryObject({
-                        NameObject("/Font"):
-                            DictionaryObject({
-                                NameObject("/F1"): font,
-                            }),
-                    })
-                )
+                overlay[NameObject("/Resources")] = DictionaryObject({
+                    NameObject("/Font"): DictionaryObject({
+                        NameObject("/F1"): font,
+                    }),
+                })
 
                 size = max(
                     1,
@@ -1227,3 +1162,102 @@ class PDFToolsApp(App):
 
                 commands.append(
                     "BT /F1 %.2f Tf 15 %.2f Td (%s) Tj ET"
+                    % (
+                        size,
+                        max(5, height - 25),
+                        escaped,
+                    )
+                )
+
+            if strokes:
+                signature_width = min(
+                    180,
+                    width * 0.6,
+                )
+
+                signature_height = min(
+                    70,
+                    height * 0.2,
+                )
+
+                x = max(
+                    0,
+                    width - signature_width - 15,
+                )
+
+                y = min(
+                    20,
+                    height * 0.05,
+                )
+
+                for stroke in strokes:
+                    for index, (px, py) in enumerate(stroke):
+                        commands.append(
+                            "%.2f %.2f %s"
+                            % (
+                                x + px * signature_width,
+                                y + py * signature_height,
+                                "m" if index == 0 else "l",
+                            )
+                        )
+
+                    commands.append("S")
+
+            commands.append("Q")
+
+            stream = DecodedStreamObject()
+            stream.set_data(
+                "\n".join(commands).encode("ascii")
+            )
+
+            overlay[NameObject("/Contents")] = stream
+
+            page.merge_transformed_page(
+                overlay,
+                Transformation().translate(
+                    left,
+                    bottom,
+                ),
+            )
+
+            writer = PdfWriter()
+
+            for pdf_page in reader.pages:
+                writer.add_page(pdf_page)
+
+            return self.prepare_document(
+                pdf_bytes(writer),
+                (
+                    "Applied. Save result. "
+                    "Original file is unchanged."
+                ),
+                page=self.page,
+            )
+
+        self.job(work)
+
+    def save(self):
+        if self.result is None:
+            self.status.text = (
+                "Create a Word file or "
+                "edit/merge/extract PDF first."
+            )
+            return
+
+        self.pending_save = self.result
+        self.pick(103)
+
+    def on_pause(self):
+        return True
+
+    def on_stop(self):
+        if platform == "android" and self.bound:
+            from android import activity
+
+            activity.unbind(
+                on_activity_result=self.activity_result
+            )
+
+
+if __name__ == "__main__":
+    PDFToolsApp().run()
