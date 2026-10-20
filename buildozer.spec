@@ -30,6 +30,8 @@ android.add_src = java
 
 android.gradle_dependencies = com.rmtheis:tess-two:9.1.0
 
+android.release_artifact = apk
+
 
 [buildozer]
 
