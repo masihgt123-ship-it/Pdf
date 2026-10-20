@@ -10,7 +10,6 @@ import com.googlecode.tesseract.android.TessBaseAPI;
 import java.io.File;
 import java.io.FileOutputStream;
 
-
 public final class PdfBridge {
 
     private static Bitmap bitmap(
@@ -59,14 +58,19 @@ public final class PdfBridge {
 
             image.eraseColor(Color.WHITE);
 
-            page.render(
-                    image,
-                    null,
-                    null,
-                    PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
-            );
+            try {
+                page.render(
+                        image,
+                        null,
+                        null,
+                        PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
+                );
 
-            return image;
+                return image;
+            } catch (Exception exception) {
+                image.recycle();
+                throw exception;
+            }
         }
     }
 
@@ -86,11 +90,15 @@ public final class PdfBridge {
                 FileOutputStream stream =
                         new FileOutputStream(output)
         ) {
-            image.compress(
+            if (!image.compress(
                     Bitmap.CompressFormat.PNG,
                     100,
                     stream
-            );
+            )) {
+                throw new Exception(
+                        "Could not save the page preview."
+                );
+            }
         } finally {
             image.recycle();
         }
@@ -102,15 +110,36 @@ public final class PdfBridge {
             String dataDir
     ) throws Exception {
 
+        File tessdata = new File(dataDir, "tessdata");
+
+        for (String language : new String[]{"fas", "eng"}) {
+            File model = new File(
+                    tessdata,
+                    language + ".traineddata"
+            );
+
+            if (!model.isFile() || model.length() < 100000) {
+                throw new Exception(
+                        "Missing or incomplete OCR language file: "
+                                + language
+                                + ".traineddata"
+                );
+            }
+        }
+
         TessBaseAPI api = new TessBaseAPI();
         Bitmap image = null;
 
         try {
-            // Tesseract OEM_LSTM_ONLY = 1.
-            if (!api.init(dataDir, "fas+eng", 1)) {
+            // tess-two 9.1.0 requires legacy language models.
+            if (!api.init(
+                    dataDir,
+                    "fas+eng",
+                    TessBaseAPI.OEM_TESSERACT_ONLY
+            )) {
                 throw new Exception(
                         "OCR initialization failed. "
-                                + "Check traineddata assets."
+                                + "Use compatible legacy traineddata files."
                 );
             }
 
@@ -131,10 +160,12 @@ public final class PdfBridge {
             return text == null ? "" : text;
 
         } finally {
-            api.end();
-
-            if (image != null) {
-                image.recycle();
+            try {
+                api.end();
+            } finally {
+                if (image != null) {
+                    image.recycle();
+                }
             }
         }
     }
