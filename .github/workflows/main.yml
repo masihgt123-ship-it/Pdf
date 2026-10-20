@@ -41,13 +41,13 @@ jobs:
           python -m pip install \
             buildozer==1.5.0 Cython==0.29.36 setuptools wheel
 
-      - name: Download offline OCR language models
+      - name: Download compatible offline OCR language models
         run: |
           set -euo pipefail
           mkdir -p tessdata
           for lang in fas eng; do
             curl --fail --location --retry 3 \
-              "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/${lang}.traineddata" \
+              "https://raw.githubusercontent.com/tesseract-ocr/tessdata/3.04.00/${lang}.traineddata" \
               --output "tessdata/${lang}.traineddata"
             test "$(stat -c%s "tessdata/${lang}.traineddata")" -gt 100000
           done
