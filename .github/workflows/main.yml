@@ -1,4 +1,4 @@
-name: Create PDF Signing Key
+name: Build PDF Tools Signed Release
 
 on:
   workflow_dispatch:
@@ -7,49 +7,107 @@ permissions:
   contents: read
 
 jobs:
-  create-key:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Generate signing key
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip curl autoconf automake libtool libltdl-dev \
+            pkg-config cmake build-essential ccache \
+            libffi-dev libssl-dev zlib1g-dev \
+            libncurses5-dev libncursesw5-dev libtinfo5 gettext
+
+      - name: Install Buildozer
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            buildozer==1.5.0 Cython==0.29.36 setuptools wheel
+
+      - name: Download offline OCR language models
+        run: |
+          set -euo pipefail
+          mkdir -p tessdata
+          for lang in fas eng; do
+            curl --fail --location --retry 3 \
+              "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/${lang}.traineddata" \
+              --output "tessdata/${lang}.traineddata"
+            test "$(stat -c%s "tessdata/${lang}.traineddata")" -gt 100000
+          done
+
+      - name: Check entry point
+        run: |
+          test -f main.py
+          python -m py_compile main.py
+
+      - name: Restore and validate signing key
         env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.HECTOR }}
-          KEY_PASSWORD: ${{ secrets.HECTOR2 }}
         run: |
           set -euo pipefail
           umask 077
+          test -n "$KEYSTORE_BASE64"
+          test -n "$KEYSTORE_PASSWORD"
+          printf '%s' "$KEYSTORE_BASE64" \
+            | base64 --decode > "$RUNNER_TEMP/pdftools.jks"
+          test -s "$RUNNER_TEMP/pdftools.jks"
+          keytool -list \
+            -keystore "$RUNNER_TEMP/pdftools.jks" \
+            -storepass:env KEYSTORE_PASSWORD \
+            -alias pdftools > /dev/null
 
-          if [ "${#KEYSTORE_PASSWORD}" -lt 16 ] || [ "${#KEY_PASSWORD}" -lt 16 ]; then
-            echo "Both passwords must contain at least 16 characters."
+      - name: Build signed release APK
+        env:
+          P4A_RELEASE_KEYSTORE: ${{ runner.temp }}/pdftools.jks
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.HECTOR }}
+          P4A_RELEASE_KEYALIAS: pdftools
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.HECTOR2 }}
+        run: |
+          set -euo pipefail
+          test -n "$P4A_RELEASE_KEYALIAS_PASSWD"
+          buildozer android release
+
+      - name: Verify APK signatures
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "$HOME/.buildozer" /opt/android-sdk /usr/local/lib/android/sdk \
+            -type f -name apksigner 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -z "$APKSIGNER" ]; then
+            echo "apksigner not found"
             exit 1
           fi
+          shopt -s nullglob
+          apks=(bin/*.apk)
+          test "${#apks[@]}" -gt 0
+          for apk in "${apks[@]}"; do
+            "$APKSIGNER" verify --verbose --print-certs "$apk"
+          done
 
-          keytool -genkeypair \
-            -keystore "$RUNNER_TEMP/pdftools.jks" \
-            -storetype JKS \
-            -alias pdftools \
-            -keyalg RSA \
-            -keysize 3072 \
-            -validity 10000 \
-            -storepass:env KEYSTORE_PASSWORD \
-            -keypass:env KEY_PASSWORD \
-            -dname "CN=PDF Tools, OU=Mobile, O=PDF Tools" \
-            -noprompt
-
-      - name: Save signing key
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: pdftools-signing-key
-          path: ${{ runner.temp }}/pdftools.jks
-          retention-days: 1
+          name: PDF-Tools-signed-release-APK
+          path: bin/*.apk
           if-no-files-found: error
 
-      - name: Clean up
+      - name: Remove signing key
         if: always()
         run: rm -f "$RUNNER_TEMP/pdftools.jks"
