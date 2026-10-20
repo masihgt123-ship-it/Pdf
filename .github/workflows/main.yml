@@ -1,4 +1,4 @@
-name: Build PDF Tools Signed Release
+name: PDF APK RELEASE FINAL
 
 on:
   workflow_dispatch:
