@@ -20,58 +20,53 @@ public final class PdfBridge {
     ) throws Exception {
 
         try (
-            ParcelFileDescriptor descriptor =
-                ParcelFileDescriptor.open(
-                    new File(file),
-                    ParcelFileDescriptor.MODE_READ_ONLY
-                );
+                ParcelFileDescriptor fd =
+                        ParcelFileDescriptor.open(
+                                new File(file),
+                                ParcelFileDescriptor.MODE_READ_ONLY
+                        );
 
-            PdfRenderer renderer =
-                new PdfRenderer(descriptor);
+                PdfRenderer renderer = new PdfRenderer(fd);
 
-            PdfRenderer.Page page =
-                renderer.openPage(index)
+                PdfRenderer.Page page = renderer.openPage(index)
         ) {
             float scale = Math.min(
-                (float) width / page.getWidth(),
-                3.0f
+                    (float) width / page.getWidth(),
+                    3.0f
             );
 
-            int renderedWidth = Math.max(
-                1,
-                Math.round(page.getWidth() * scale)
+            int w = Math.max(
+                    1,
+                    Math.round(page.getWidth() * scale)
             );
 
-            int renderedHeight = Math.max(
-                1,
-                Math.round(page.getHeight() * scale)
+            int h = Math.max(
+                    1,
+                    Math.round(page.getHeight() * scale)
             );
 
-            if (
-                (long) renderedWidth * renderedHeight
-                > 8000000
-            ) {
+            if ((long) w * h > 8000000) {
                 throw new Exception(
-                    "Page is too large to render safely."
+                        "Page is too large to render safely."
                 );
             }
 
-            Bitmap bitmap = Bitmap.createBitmap(
-                renderedWidth,
-                renderedHeight,
-                Bitmap.Config.ARGB_8888
+            Bitmap image = Bitmap.createBitmap(
+                    w,
+                    h,
+                    Bitmap.Config.ARGB_8888
             );
 
-            bitmap.eraseColor(Color.WHITE);
+            image.eraseColor(Color.WHITE);
 
             page.render(
-                bitmap,
-                null,
-                null,
-                PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
+                    image,
+                    null,
+                    null,
+                    PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
             );
 
-            return bitmap;
+            return image;
         }
     }
 
@@ -81,62 +76,55 @@ public final class PdfBridge {
             String output
     ) throws Exception {
 
-        Bitmap bitmap = bitmap(
-            file,
-            index,
-            1200
+        Bitmap image = bitmap(
+                file,
+                index,
+                1200
         );
 
         try (
-            FileOutputStream stream =
-                new FileOutputStream(output)
+                FileOutputStream stream =
+                        new FileOutputStream(output)
         ) {
-            bitmap.compress(
-                Bitmap.CompressFormat.PNG,
-                100,
-                stream
+            image.compress(
+                    Bitmap.CompressFormat.PNG,
+                    100,
+                    stream
             );
-
         } finally {
-            bitmap.recycle();
+            image.recycle();
         }
     }
 
     public static String recognize(
             String file,
             int index,
-            String dataDirectory
+            String dataDir
     ) throws Exception {
 
         TessBaseAPI api = new TessBaseAPI();
-        Bitmap bitmap = null;
+        Bitmap image = null;
 
         try {
-            // Tesseract engine mode 1: LSTM only.
-            boolean initialized = api.init(
-                dataDirectory,
-                "fas+eng",
-                1
-            );
-
-            if (!initialized) {
+            // Tesseract OEM_LSTM_ONLY = 1.
+            if (!api.init(dataDir, "fas+eng", 1)) {
                 throw new Exception(
-                    "OCR initialization failed. "
-                    + "Check traineddata assets."
+                        "OCR initialization failed. "
+                                + "Check traineddata assets."
                 );
             }
 
-            bitmap = bitmap(
-                file,
-                index,
-                2000
+            image = bitmap(
+                    file,
+                    index,
+                    2000
             );
 
             api.setPageSegMode(
-                TessBaseAPI.PageSegMode.PSM_AUTO
+                    TessBaseAPI.PageSegMode.PSM_AUTO
             );
 
-            api.setImage(bitmap);
+            api.setImage(image);
 
             String text = api.getUTF8Text();
 
@@ -145,8 +133,8 @@ public final class PdfBridge {
         } finally {
             api.end();
 
-            if (bitmap != null) {
-                bitmap.recycle();
+            if (image != null) {
+                image.recycle();
             }
         }
     }
