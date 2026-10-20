@@ -1227,4 +1227,126 @@ class PDFToolsApp(App):
                 font = DictionaryObject({
                     NameObject('/Type'): NameObject('/Font'),
                     NameObject('/Subtype'): NameObject('/Type1'),
-                    NameObject('/BaseFon
+                    NameObject('/BaseFont'): NameObject(
+                        '/Helvetica'
+                    )
+                })
+
+                overlay[NameObject('/Resources')] = (
+                    DictionaryObject({
+                        NameObject('/Font'): DictionaryObject({
+                            NameObject('/F1'): font
+                        })
+                    })
+                )
+
+                size = max(
+                    1,
+                    min(
+                        12,
+                        (width - 30)
+                        / max(1, len(note) * 0.65)
+                    )
+                )
+
+                commands.append(
+                    'BT /F1 %.2f Tf 15 %.2f Td (%s) Tj ET'
+                    % (
+                        size,
+                        max(5, height - 25),
+                        escaped
+                    )
+                )
+
+            if strokes:
+                signature_width = min(
+                    180,
+                    width * 0.6
+                )
+
+                signature_height = min(
+                    70,
+                    height * 0.2
+                )
+
+                x = max(
+                    0,
+                    width - signature_width - 15
+                )
+
+                y = min(
+                    20,
+                    height * 0.05
+                )
+
+                for stroke in strokes:
+                    for index, (px, py) in enumerate(stroke):
+                        commands.append(
+                            '%.2f %.2f %s'
+                            % (
+                                x + px * signature_width,
+                                y + py * signature_height,
+                                'm' if index == 0 else 'l'
+                            )
+                        )
+
+                    commands.append('S')
+
+            commands.append('Q')
+
+            stream = DecodedStreamObject()
+
+            stream.set_data(
+                ('\n'.join(commands)).encode('ascii')
+            )
+
+            overlay[NameObject('/Contents')] = stream
+
+            from pypdf import Transformation
+
+            page.merge_transformed_page(
+                overlay,
+                Transformation().translate(
+                    left,
+                    bottom
+                )
+            )
+
+            writer = PdfWriter()
+
+            for current_page in reader.pages:
+                writer.add_page(current_page)
+
+            return self.prepare_document(
+                pdf_bytes(writer),
+                'Applied. Save result. Original file is unchanged.',
+                page=self.page
+            )
+
+        self.job(work)
+
+    def save(self):
+        if self.result is None:
+            self.status.text = (
+                'Create a Word file or '
+                'edit/merge/extract PDF first.'
+            )
+            return
+
+        self.pending_save = self.result
+        self.pick(103)
+
+    def on_pause(self):
+        return True
+
+    def on_stop(self):
+        if platform == 'android' and self.bound:
+            from android import activity
+
+            activity.unbind(
+                on_activity_result=self.activity_result
+            )
+
+
+if __name__ == '__main__':
+    PDFToolsApp().run()
